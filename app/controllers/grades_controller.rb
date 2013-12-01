@@ -1,11 +1,12 @@
 class GradesController < ApplicationController
+  use_google_charts
   helper :file
   helper :submitted_content
 
   #the view grading report provides the instructor with an overall view of all the grades for
   #an assignment. It lists all participants of an assignment and all the reviews they received.
   #It also gives a final score, which is an average of all the reviews and greatest difference
-  #in the scores of all the reviews.  
+  #in the scores of all the reviews.
   def view
     @assignment = Assignment.find(params[:id])
     @questions = Hash.new
@@ -17,8 +18,24 @@ class GradesController < ApplicationController
     @scores = @assignment.scores(@questions)
   end
 
+
   def view_my_scores
     @participant = AssignmentParticipant.find(params[:id])
+
+    @average_score_results = Array.new
+    @average_score_results = ScoreCache.get_class_scores(@participant.id)
+
+    @statistics = Array.new
+    @average_score_results.each { |x|
+      @statistics << x
+    }
+
+    @average_reviews = ScoreCache.get_reviews_average(@participant.id)
+    @average_metareviews = ScoreCache.get_metareviews_average(@participant.id)
+
+    @my_reviews = ScoreCache.my_reviews(@participant.id)
+    @my_metareviews = ScoreCache.my_metareviews(@participant.id)
+
     return if redirect_when_disallowed
     @assignment = @participant.assignment
     @questions = Hash.new
@@ -30,7 +47,7 @@ class GradesController < ApplicationController
 
     ## When user clicks on the notification, it should go away
     #deleting all review notifications
-    rmaps = @participant.response_maps
+    rmaps = ParticipantReviewResponseMap.find_all_by_reviewee_id_and_reviewed_object_id(@participant.id, @participant.assignment.id)
     for rmap in rmaps
       rmap.notification_accepted = true
       rmap.save
@@ -40,7 +57,7 @@ class GradesController < ApplicationController
     #deleting all metareview notifications
     rmaps = ParticipantReviewResponseMap.find_all_by_reviewer_id_and_reviewed_object_id(@participant.id, @participant.parent_id)
     for rmap in rmaps
-      mmaps = MetareviewResponseMap.find_all_by_reviewee_id_and_reviewed_object_id(rmap.reviewer_id, rmap.map_id)
+      mmaps = MetareviewResponseMap.find_all_by_reviewee_id_and_reviewed_object_id(rmap.reviewer_id, rmap.id)
       if !mmaps.nil?
         for mmap in mmaps
           mmap.notification_accepted = true
@@ -48,7 +65,75 @@ class GradesController < ApplicationController
         end
       end
     end
+    # start distribution function
+
+    @assignment_id = @participant.parent_id
+    @score_cache = Array.new
+
+    assignment_participants = AssignmentParticipant.find_all_by_parent_id(@assignment_id)
+
+    @scores = [0,0,0,0,0,0,0,0,0,0]
+
+    for ap in assignment_participants
+      sc_cache=  ScoreCache.find_by_reviewee_id(ap.id)
+      if(sc_cache)
+        @score_cache <<  sc_cache.score
+      end
+    end
+
+
+    #  for x in score_cache
+    @score_cache.each{|x|
+      index=(x/10).to_i
+      if(index>=10)
+        index=9
+      end
+      @scores[index] =  @scores[index] + 1
+    }
+
+
+
+    dataset = GoogleChartDataset.new :data => @scores, :color => '9A0000'
+    data = GoogleChartData.new :datasets => [dataset]
+    axis = GoogleChartAxis.new :axis  => [GoogleChartAxis::BOTTOM, GoogleChartAxis::LEFT]
+    @chart1 = GoogleBarChart.new :width => 500, :height => 200
+    @chart1.data = data
+    @chart1.axis = axis
+
+
+=begin
+    ###################### Second Graph ####################
+
+    max_score = 0
+    @review_distribution =[0,0,0,0,0,0,0,0,0,0]
+    ### For every responsemapping for this assgt, find the reviewer_id and reviewee_id #####
+    @reviews_not_done = 0
+    response_maps =  ResponseMap.find(:all, :conditions =>["reviewed_object_id = ? and type = ?", @assignment.id, objtype])
+    review_report = @assignment.compute_reviews_hash
+    for response_map in response_maps
+      score_for_this_review = review_report[response_map.reviewer_id][response_map.reviewee_id]
+      if(score_for_this_review != 0)
+        @review_distribution[(score_for_this_review/10-1).to_i] = @review_distribution[(score_for_this_review/10-1).to_i] + 1
+        if (@review_distribution[(score_for_this_review/10-1).to_i] > max_score)
+          max_score = @review_distribution[(score_for_this_review/10-1).to_i]
+        end
+      else
+        @reviews_not_done +=1
+      end
+    end
+
+    dataset2 = GoogleChartDataset.new :data => @review_distribution, :color => '9A0000'
+    data2 = GoogleChartData.new :datasets => [dataset2]
+    axis2 = GoogleChartAxis.new :axis  => [GoogleChartAxis::BOTTOM, GoogleChartAxis::LEFT]
+
+    @chart2 = GoogleBarChart.new :width => 500, :height => 200
+    @chart2.data = data2
+    @chart2.axis = axis2
+=end
+
   end
+
+
 
   def edit
     @participant = AssignmentParticipant.find(params[:id])
@@ -123,7 +208,7 @@ class GradesController < ApplicationController
   end
 
   # the grading conflict email form provides the instructor a way of emailing
-  # the reviewers of a submission if he feels one of the reviews was unfair or inaccurate.  
+  # the reviewers of a submission if he feels one of the reviews was unfair or inaccurate.
   def conflict_notification
     if session[:user].role_id !=6
       @instructor = session[:user]
@@ -226,10 +311,15 @@ class GradesController < ApplicationController
       role = "metareviewer"
       item = "review"
     end
-    "Hi ##[recipient_name], 
-    
-You submitted a score of ##[recipients_grade] for assignment ##[assignment_name] that varied greatly from another "+role+"'s score for the same "+item+". 
-    
+    "Hi ##[recipient_name],
+
+You submitted a score of ##[recipients_grade] for assignment ##[assignment_name] that varied greatly from another "+role+"'s score for the same "+item+".
+
 The Expertiza system has brought this to my attention."
   end
+
+
+
+
+
 end
